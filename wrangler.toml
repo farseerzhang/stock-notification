@@ -7,7 +7,7 @@ compatibility_date = "2025-01-01"
 # then paste the returned id below
 [[kv_namespaces]]
 binding = "STOCK_KV"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "c7ce41d1bd22498086570186c9692240"
 
 # Cron trigger: every 30 min, Mon-Fri, during US market hours (UTC)
 # US market: 9:30-16:00 ET = 13:30-20:00 UTC (during EDT, summer)

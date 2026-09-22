@@ -8,8 +8,15 @@
     "tail": "wrangler tail"
   },
   "dependencies": {
+    "all": "^0.0.0",
+    "dependencies": "^0.0.1",
     "hono": "^4.6.0",
-    "technicalindicators": "^3.1.0"
+    "in": "^0.19.0",
+    "install": "^0.13.0",
+    "project": "^0.1.6",
+    "technicalindicators": "^3.1.0",
+    "the": "^1.0.2",
+    "your": "^0.2.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
