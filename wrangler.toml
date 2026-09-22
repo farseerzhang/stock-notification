@@ -1,0 +1,23 @@
+name = "stock-notifier"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# KV namespace for storing watchlist, last-signal state, price history
+# Create with: wrangler kv:namespace create "STOCK_KV"
+# then paste the returned id below
+[[kv_namespaces]]
+binding = "STOCK_KV"
+id = "REPLACE_WITH_YOUR_KV_ID"
+
+# Cron trigger: every 15 min, Mon-Fri, during US market hours (UTC)
+# US market: 9:30-16:00 ET = 13:30-20:00 UTC (during EDT, summer)
+#            9:30-16:00 ET = 14:30-21:00 UTC (during EST, winter)
+# This example covers both with a little padding: 13:00-21:00 UTC
+[triggers]
+crons = ["*/15 13-21 * * 1-5"]
+
+# Secrets (do NOT put these here — set them via CLI, see README):
+# wrangler secret put TELEGRAM_BOT_TOKEN
+# wrangler secret put TELEGRAM_CHAT_ID
+# wrangler secret put STOCK_API_KEY
+# wrangler secret put ANTHROPIC_API_KEY   (optional, only if using AI reasoning)
