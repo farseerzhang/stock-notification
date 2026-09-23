@@ -1,6 +1,6 @@
 import type { QuantResult, Candle, AiResult, Signal } from "./types";
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.6-flash";
 
 /**
  * Sends the quant indicators + recent price action to Gemini and asks it to
