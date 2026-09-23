@@ -14,7 +14,7 @@ id = "c7ce41d1bd22498086570186c9692240"
 #            9:30-16:00 ET = 14:30-21:00 UTC (during EST, winter)
 # This example covers both with a little padding: 13:00-21:00 UTC
 [triggers]
-crons = ["0 */2 13-21 * * 1-5"]
+crons = ["*/50 13-21 * * 1-5"]
 
 # Secrets (do NOT put these here — set them via CLI, see README):
 # wrangler secret put TELEGRAM_BOT_TOKEN
