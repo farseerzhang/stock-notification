@@ -1,5 +1,5 @@
 import { RSI, MACD, SMA } from "technicalindicators";
-import type { Candle, AnalysisResult, Signal } from "./types";
+import type { Candle, QuantResult, Signal } from "./types";
 
 /**
  * Simple rule-based strategy combining three well-known indicators:
@@ -7,10 +7,10 @@ import type { Candle, AnalysisResult, Signal } from "./types";
  * - MACD histogram: momentum shift
  * - SMA crossover (fast vs slow): trend direction
  *
- * This is intentionally conservative and easy to reason about.
- * Tune thresholds once you've backtested against your own data.
+ * This result feeds into the Gemini reasoning layer as grounding context —
+ * see gemini.ts and combine.ts.
  */
-export function analyze(ticker: string, candles: Candle[]): AnalysisResult {
+export function quantAnalyze(ticker: string, candles: Candle[]): QuantResult {
   const closes = candles.map((c) => c.close);
   const latestPrice = closes[closes.length - 1];
 
@@ -26,10 +26,10 @@ export function analyze(ticker: string, candles: Candle[]): AnalysisResult {
     SimpleMASignal: false,
   });
   const macdHistogram = macdValues.length
-    ? macdValues[macdValues.length - 1].histogram ?? null
-    : null;
+      ? macdValues[macdValues.length - 1].histogram ?? null
+      : null;
   const prevMacdHistogram =
-    macdValues.length > 1 ? macdValues[macdValues.length - 2].histogram ?? null : null;
+      macdValues.length > 1 ? macdValues[macdValues.length - 2].histogram ?? null : null;
 
   const smaFastValues = SMA.calculate({ values: closes, period: 20 });
   const smaSlowValues = SMA.calculate({ values: closes, period: 50 });

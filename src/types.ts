@@ -3,7 +3,8 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
   STOCK_API_KEY: string;
-  ANTHROPIC_API_KEY?: string;
+  GEMINI_API_KEY: string;
+  GEMINI_MODEL?: string; // optional override, defaults to gemini-2.5-flash
 }
 
 export interface Candle {
@@ -17,7 +18,8 @@ export interface Candle {
 
 export type Signal = "BUY" | "SELL" | "HOLD";
 
-export interface AnalysisResult {
+// Output of the rule-based quant layer (RSI/MACD/SMA)
+export interface QuantResult {
   ticker: string;
   signal: Signal;
   reasons: string[];
@@ -28,4 +30,19 @@ export interface AnalysisResult {
     smaFast: number | null;
     smaSlow: number | null;
   };
+}
+
+// Output of the Gemini reasoning layer
+export interface AiResult {
+  signal: Signal;
+  confidence: number; // 0-1
+  reasoning: string;
+}
+
+// Final combined result sent to Telegram / returned by the API
+export interface CombinedResult {
+  ticker: string;
+  quant: QuantResult;
+  ai: AiResult | null; // null if Gemini call failed — quant-only fallback
+  finalSignal: Signal;
 }
