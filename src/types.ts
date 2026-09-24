@@ -4,9 +4,10 @@ export interface Env {
   TELEGRAM_CHAT_ID: string;
   STOCK_API_KEY: string;
   GEMINI_API_KEY: string;
-  GEMINI_MODEL?: string; // optional override
-  FINNHUB_API_KEY: string; // free tier: company news endpoint
+  GEMINI_MODEL?: string; // optional override, defaults to gemini-3.6-flash
+  FINNHUB_API_KEY: string; // free tier: company news + basic financials endpoints
   ENABLE_NEWS?: string; // "true"/"false" — toggles fetching + feeding news to Gemini
+  ENABLE_FUNDAMENTALS?: string; // "true"/"false" — toggles fetching + feeding fundamentals to Gemini
 }
 
 export interface Candle {
@@ -43,12 +44,24 @@ export interface NewsHeadline {
   datetime: number; // unix seconds
 }
 
+// Key fundamental metrics fetched from Finnhub's Basic Financials endpoint.
+// Any field can be null if Finnhub doesn't report it for a given company.
+export interface Fundamentals {
+  peRatio: number | null;
+  epsTTM: number | null;
+  revenuePerShareTTM: number | null;
+  revenueGrowthYoY: number | null; // percent
+  debtToEquity: number | null;
+  marketCapitalization: number | null; // millions USD, per Finnhub convention
+}
+
 // Output of the Gemini reasoning layer
 export interface AiResult {
   signal: Signal;
   confidence: number; // 0-1
   reasoning: string;
   newsConsidered: number; // how many headlines were fed in, 0 if news disabled/unavailable
+  fundamentalsConsidered: boolean; // whether fundamental data was available for this run
 }
 
 // Final combined result sent to Telegram / returned by the API

@@ -1,8 +1,9 @@
 import { Hono } from "hono";
-import type { Env, CombinedResult } from "./types";
+import type { Env, CombinedResult, Fundamentals } from "./types";
 import { fetchDailyCandles } from "./stockData";
 import { quantAnalyze } from "./analysis";
 import { fetchCompanyNews } from "./finnhubNews";
+import { fetchFundamentals } from "./fundamentals";
 import { analyzeWithGemini } from "./gemini";
 import { combineSignals } from "./combine";
 import { sendTelegramMessage } from "./telegram";
@@ -17,6 +18,7 @@ async function runFullAnalysis(env: Env, ticker: string): Promise<CombinedResult
   const quant = quantAnalyze(ticker, candles);
 
   const newsEnabled = env.ENABLE_NEWS !== "false"; // defaults to true
+  const fundamentalsEnabled = env.ENABLE_FUNDAMENTALS !== "false"; // defaults to true
 
   let news: Awaited<ReturnType<typeof fetchCompanyNews>> = [];
   if (newsEnabled) {
@@ -28,9 +30,25 @@ async function runFullAnalysis(env: Env, ticker: string): Promise<CombinedResult
     }
   }
 
+  let fundamentals: Fundamentals | null = null;
+  if (fundamentalsEnabled) {
+    try {
+      fundamentals = await fetchFundamentals(ticker, env.FINNHUB_API_KEY);
+    } catch (err) {
+      console.error(`Fundamentals fetch failed for ${ticker}:`, (err as Error).message);
+    }
+  }
+
   let ai = null;
   try {
-    ai = await analyzeWithGemini(env.GEMINI_API_KEY, quant, candles, news, env.GEMINI_MODEL);
+    ai = await analyzeWithGemini(
+        env.GEMINI_API_KEY,
+        quant,
+        candles,
+        news,
+        fundamentals,
+        env.GEMINI_MODEL
+    );
   } catch (err) {
     // Never let a Gemini failure break the pipeline — quant-only fallback
     console.error(`Gemini analysis failed for ${ticker}:`, (err as Error).message);
@@ -39,7 +57,7 @@ async function runFullAnalysis(env: Env, ticker: string): Promise<CombinedResult
   return combineSignals(ticker, quant, ai);
 }
 
-// Manual trigger endpoint: GET /analyze/AAPL — test both layers without waiting for cron
+// Manual trigger endpoint: GET /analyze/AAPL — test all layers without waiting for cron
 app.get("/analyze/:ticker", async (c) => {
   const ticker = c.req.param("ticker").toUpperCase();
   try {
@@ -79,6 +97,7 @@ interface RunLogEntry {
   aiConfidence: number | null;
   aiReasoning: string | null;
   newsConsidered: number | null;
+  fundamentalsConsidered: boolean | null;
   finalSignal: string;
   notified: boolean;
   error?: string;
@@ -105,7 +124,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
       console.log(
           `[scheduler] ${ticker} — quant=${result.quant.signal} ` +
           `(${result.quant.reasons.join(", ") || "no rules triggered"}) ` +
-          `ai=${result.ai ? `${result.ai.signal} @ ${(result.ai.confidence * 100).toFixed(0)}% (${result.ai.newsConsidered} headlines)` : "unavailable"} ` +
+          `ai=${result.ai ? `${result.ai.signal} @ ${(result.ai.confidence * 100).toFixed(0)}% (${result.ai.newsConsidered} headlines, fundamentals=${result.ai.fundamentalsConsidered})` : "unavailable"} ` +
           `final=${result.finalSignal} price=$${result.quant.price.toFixed(2)}`
       );
 
@@ -115,7 +134,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
 
       if (willNotify) {
         const aiLine = result.ai
-            ? `\nAI (${(result.ai.confidence * 100).toFixed(0)}% conf, ${result.ai.newsConsidered} headlines): ${result.ai.signal} — ${result.ai.reasoning}`
+            ? `\nAI (${(result.ai.confidence * 100).toFixed(0)}% conf, ${result.ai.newsConsidered} headlines${result.ai.fundamentalsConsidered ? ", fundamentals" : ""}): ${result.ai.signal} — ${result.ai.reasoning}`
             : `\nAI: unavailable, quant-only`;
 
         const message =
@@ -139,6 +158,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
         aiConfidence: result.ai?.confidence ?? null,
         aiReasoning: result.ai?.reasoning ?? null,
         newsConsidered: result.ai?.newsConsidered ?? null,
+        fundamentalsConsidered: result.ai?.fundamentalsConsidered ?? null,
         finalSignal: result.finalSignal,
         notified: willNotify,
       });
@@ -154,6 +174,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
         aiConfidence: null,
         aiReasoning: null,
         newsConsidered: null,
+        fundamentalsConsidered: null,
         finalSignal: "ERROR",
         notified: false,
         error: message,
