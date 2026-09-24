@@ -55,7 +55,7 @@ app.get("/test-telegram", async (c) => {
 app.get("/", (c) => c.text("stock-notifier is running"));
 
 // How many recent scheduler runs to keep in KV for later inspection via /logs
-const LOG_HISTORY_LIMIT = 20;
+const LOG_HISTORY_LIMIT = 5;
 
 interface RunLogEntry {
   timestamp: string;
