@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env, CombinedResult } from "./types";
 import { fetchDailyCandles } from "./stockData";
 import { quantAnalyze } from "./analysis";
+import { fetchCompanyNews } from "./finnhubNews";
 import { analyzeWithGemini } from "./gemini";
 import { combineSignals } from "./combine";
 import { sendTelegramMessage } from "./telegram";
@@ -15,9 +16,21 @@ async function runFullAnalysis(env: Env, ticker: string): Promise<CombinedResult
   const candles = await fetchDailyCandles(ticker, env.STOCK_API_KEY);
   const quant = quantAnalyze(ticker, candles);
 
+  const newsEnabled = env.ENABLE_NEWS !== "false"; // defaults to true
+
+  let news: Awaited<ReturnType<typeof fetchCompanyNews>> = [];
+  if (newsEnabled) {
+    try {
+      news = await fetchCompanyNews(ticker, env.FINNHUB_API_KEY);
+    } catch (err) {
+      // Never let news fetch failure block the whole analysis
+      console.error(`News fetch failed for ${ticker}:`, (err as Error).message);
+    }
+  }
+
   let ai = null;
   try {
-    ai = await analyzeWithGemini(env.GEMINI_API_KEY, quant, candles, env.GEMINI_MODEL);
+    ai = await analyzeWithGemini(env.GEMINI_API_KEY, quant, candles, news, env.GEMINI_MODEL);
   } catch (err) {
     // Never let a Gemini failure break the pipeline — quant-only fallback
     console.error(`Gemini analysis failed for ${ticker}:`, (err as Error).message);
@@ -55,7 +68,7 @@ app.get("/test-telegram", async (c) => {
 app.get("/", (c) => c.text("stock-notifier is running"));
 
 // How many recent scheduler runs to keep in KV for later inspection via /logs
-const LOG_HISTORY_LIMIT = 5;
+const LOG_HISTORY_LIMIT = 50;
 
 interface RunLogEntry {
   timestamp: string;
@@ -65,6 +78,7 @@ interface RunLogEntry {
   aiSignal: string | null;
   aiConfidence: number | null;
   aiReasoning: string | null;
+  newsConsidered: number | null;
   finalSignal: string;
   notified: boolean;
   error?: string;
@@ -91,7 +105,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
       console.log(
           `[scheduler] ${ticker} — quant=${result.quant.signal} ` +
           `(${result.quant.reasons.join(", ") || "no rules triggered"}) ` +
-          `ai=${result.ai ? `${result.ai.signal} @ ${(result.ai.confidence * 100).toFixed(0)}%` : "unavailable"} ` +
+          `ai=${result.ai ? `${result.ai.signal} @ ${(result.ai.confidence * 100).toFixed(0)}% (${result.ai.newsConsidered} headlines)` : "unavailable"} ` +
           `final=${result.finalSignal} price=$${result.quant.price.toFixed(2)}`
       );
 
@@ -101,7 +115,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
 
       if (willNotify) {
         const aiLine = result.ai
-            ? `\nAI (${(result.ai.confidence * 100).toFixed(0)}% conf): ${result.ai.signal} — ${result.ai.reasoning}`
+            ? `\nAI (${(result.ai.confidence * 100).toFixed(0)}% conf, ${result.ai.newsConsidered} headlines): ${result.ai.signal} — ${result.ai.reasoning}`
             : `\nAI: unavailable, quant-only`;
 
         const message =
@@ -124,6 +138,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
         aiSignal: result.ai?.signal ?? null,
         aiConfidence: result.ai?.confidence ?? null,
         aiReasoning: result.ai?.reasoning ?? null,
+        newsConsidered: result.ai?.newsConsidered ?? null,
         finalSignal: result.finalSignal,
         notified: willNotify,
       });
@@ -138,6 +153,7 @@ async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
         aiSignal: null,
         aiConfidence: null,
         aiReasoning: null,
+        newsConsidered: null,
         finalSignal: "ERROR",
         notified: false,
         error: message,

@@ -4,7 +4,9 @@ export interface Env {
   TELEGRAM_CHAT_ID: string;
   STOCK_API_KEY: string;
   GEMINI_API_KEY: string;
-  GEMINI_MODEL?: string; // optional override, defaults to gemini-2.5-flash
+  GEMINI_MODEL?: string; // optional override
+  FINNHUB_API_KEY: string; // free tier: company news endpoint
+  ENABLE_NEWS?: string; // "true"/"false" — toggles fetching + feeding news to Gemini
 }
 
 export interface Candle {
@@ -32,11 +34,21 @@ export interface QuantResult {
   };
 }
 
+// A single news headline fetched from Finnhub
+export interface NewsHeadline {
+  headline: string;
+  summary: string;
+  source: string;
+  url: string;
+  datetime: number; // unix seconds
+}
+
 // Output of the Gemini reasoning layer
 export interface AiResult {
   signal: Signal;
   confidence: number; // 0-1
   reasoning: string;
+  newsConsidered: number; // how many headlines were fed in, 0 if news disabled/unavailable
 }
 
 // Final combined result sent to Telegram / returned by the API

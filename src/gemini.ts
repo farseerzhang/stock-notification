@@ -1,47 +1,58 @@
-import type { QuantResult, Candle, AiResult, Signal } from "./types";
+import type { QuantResult, Candle, AiResult, NewsHeadline, Signal } from "./types";
 
 const DEFAULT_MODEL = "gemini-3.5-flash-lite";
 
 /**
- * Sends the quant indicators + recent price action to Gemini and asks it to
- * reason over them, producing a final signal + confidence + short rationale.
- *
- * This is deliberately NOT asking Gemini to invent its own indicators from
- * scratch — it's given the already-computed RSI/MACD/SMA numbers plus recent
- * closes, and asked to weigh them like an analyst would. Keeps the AI layer
- * grounded in real computed numbers rather than hallucinated math.
+ * Combines quant indicators + recent news headlines (fetched separately via
+ * Finnhub, not Gemini search grounding — see finnhubNews.ts) into one
+ * structured verdict. Single call, JSON response mode, no search tool — so
+ * no grounding cost, just normal token pricing.
  */
 export async function analyzeWithGemini(
-  apiKey: string,
-  quant: QuantResult,
-  recentCandles: Candle[],
-  model = DEFAULT_MODEL
+    apiKey: string,
+    quant: QuantResult,
+    recentCandles: Candle[],
+    news: NewsHeadline[],
+    model = DEFAULT_MODEL
 ): Promise<AiResult> {
   const recentCloses = recentCandles
-    .slice(-10)
-    .map((c) => c.close.toFixed(2))
-    .join(", ");
+      .slice(-10)
+      .map((c) => c.close.toFixed(2))
+      .join(", ");
+
+  const newsBlock =
+      news.length > 0
+          ? news
+              .map((n, i) => `${i + 1}. [${n.source}] ${n.headline} — ${n.summary}`)
+              .join("\n")
+          : "No recent news available for this run.";
 
   const prompt = `You are a disciplined equity analyst assistant. You are given
 already-computed technical indicators for ${quant.ticker} plus the last 10
-daily closing prices. Weigh them together and decide on a signal.
+daily closing prices, and a list of recent news headlines. Weigh all of it
+together and decide on a signal.
 
 Current price: $${quant.price.toFixed(2)}
 Last 10 closes: ${recentCloses}
 
-Indicators:
+Technical indicators:
 - RSI(14): ${quant.indicators.rsi?.toFixed(2) ?? "N/A"}
 - MACD histogram: ${quant.indicators.macdHistogram?.toFixed(3) ?? "N/A"}
 - SMA(20): ${quant.indicators.smaFast?.toFixed(2) ?? "N/A"}
 - SMA(50): ${quant.indicators.smaSlow?.toFixed(2) ?? "N/A"}
-- Rule-based signal from these indicators alone: ${quant.signal}
+- Rule-based signal from indicators alone: ${quant.signal}
 - Rule-based reasons: ${quant.reasons.join("; ") || "none triggered"}
 
+Recent news headlines (last 7 days):
+${newsBlock}
+
 Respond with ONLY a JSON object, no other text, in this exact shape:
-{"signal": "BUY" | "SELL" | "HOLD", "confidence": <number 0 to 1>, "reasoning": "<one or two sentences>"}
+{"signal": "BUY" | "SELL" | "HOLD", "confidence": <number 0 to 1>, "reasoning": "<one or two sentences, mention whether news supported or contradicted the technicals>"}
 
 Be conservative — only deviate from the rule-based signal if you have a clear
-reason to, and reflect any disagreement honestly in your confidence score.`;
+reason to (either from technicals or news), and reflect any disagreement
+honestly in your confidence score. If no news is available, base your
+decision on technicals alone.`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
@@ -86,14 +97,15 @@ reason to, and reflect any disagreement honestly in your confidence score.`;
 
   const signal = normalizeSignal(parsed.signal);
   const confidence =
-    typeof parsed.confidence === "number"
-      ? Math.max(0, Math.min(1, parsed.confidence))
-      : 0.5;
+      typeof parsed.confidence === "number"
+          ? Math.max(0, Math.min(1, parsed.confidence))
+          : 0.5;
 
   return {
     signal,
     confidence,
     reasoning: parsed.reasoning ?? "No reasoning provided",
+    newsConsidered: news.length,
   };
 }
 
