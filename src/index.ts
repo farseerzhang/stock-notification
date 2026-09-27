@@ -9,6 +9,7 @@ import { combineSignals } from "./combine";
 import { sendTelegramMessage } from "./telegram";
 import { runBacktest } from "./backtest";
 import { getWatchlist, addTicker, removeTicker } from "./watchlist";
+import { renderDashboard } from "./ui";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -111,6 +112,9 @@ app.get("/test-telegram", async (c) => {
 
 // Health check
 app.get("/", (c) => c.text("stock-notifier is running"));
+
+// Dashboard UI — single HTML page, no build step, calls the JSON routes above via fetch()
+app.get("/dashboard", (c) => c.html(renderDashboard()));
 
 // Watchlist management — edit without redeploying
 // GET    /watchlist          → list current tickers

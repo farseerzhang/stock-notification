@@ -56,7 +56,8 @@ stock-notifier/
     ├── combine.ts            # Merges quant signal + AI signal into one final decision
     ├── backtest.ts            # Simulates the quant strategy over historical candles
     ├── watchlist.ts            # KV-backed watchlist CRUD — no redeploy needed to edit
-    └── telegram.ts              # Sends the alert message to your Telegram chat
+    ├── ui.ts                    # Dashboard HTML page (served at /dashboard) — no build step
+    └── telegram.ts               # Sends the alert message to your Telegram chat
 ```
 
 **File-by-file summary:**
@@ -73,6 +74,7 @@ stock-notifier/
 | `combine.ts` | `combineSignals()` — the agreement/override logic described above. |
 | `backtest.ts` | `runBacktest()` — walks forward through historical candles day-by-day, simulates the quant strategy (no AI/news/fundamentals), and reports return/drawdown/win-rate stats plus a full trade log. |
 | `watchlist.ts` | `getWatchlist()` / `addTicker()` / `removeTicker()` — reads/writes the ticker list in KV, seeding it with a default on first run. |
+| `ui.ts` | `renderDashboard()` — builds the `/dashboard` HTML page (inline CSS + vanilla JS) using Hono's `hono/html` templating. No build step; the JS just calls the JSON routes above with `fetch()`. |
 | `telegram.ts` | `sendTelegramMessage()` — thin wrapper around the Telegram Bot API. |
 
 ---
@@ -254,6 +256,13 @@ curl "https://stock-notifier.<your-subdomain>.workers.dev/backtest/AAPL?days=500
 → JSON with return/drawdown/win-rate stats, a buy-and-hold benchmark, and
 the full trade log. See **Backtesting** below for details.
 
+**Open the dashboard in a browser** for a UI on top of all the routes
+above (watchlist, analyze, backtest, logs) instead of raw curl/JSON:
+```
+https://stock-notifier.<your-subdomain>.workers.dev/dashboard
+```
+See **Dashboard** below for details.
+
 **Confirm Telegram wiring independent of market conditions:**
 ```bash
 curl https://stock-notifier.<your-subdomain>.workers.dev/test-telegram
@@ -414,6 +423,47 @@ the URL or make the repo public.
 
 ---
 
+## Dashboard
+
+`GET /dashboard` serves a single-page UI on top of the JSON routes above —
+watchlist management, one-off analysis, backtesting, and recent scheduler
+logs, all without needing to hand-craft curl commands or read raw JSON.
+
+```
+https://stock-notifier.<your-subdomain>.workers.dev/dashboard
+```
+
+It's a single self-contained HTML page (`src/ui.ts`) with inline CSS and
+vanilla JavaScript — no React, no build step, no bundler config. The
+JavaScript just calls the same `/watchlist`, `/analyze/:ticker`,
+`/backtest/:ticker`, and `/logs` endpoints you'd otherwise hit with curl,
+and renders the results as cards and tables instead of raw JSON. Nothing
+about the API changes because of this — it's purely a client layered on
+top of routes that already exist.
+
+**Sections:**
+- **Watchlist** — add/remove tickers inline, mirrors `/watchlist`
+- **Analyze** — enter a ticker, see the quant signal, AI verdict
+  (confidence, reasoning, how many headlines/whether fundamentals were
+  considered), and final combined signal
+- **Backtest** — enter a ticker plus optional days/capital, see return,
+  drawdown, win rate, and the full trade table
+- **Recent scheduler runs** — the last 20 logged runs from `/logs`, with
+  quant/AI/final signals and whether a Telegram notification fired
+
+**Why this fits Cloudflare's free tier with zero extra cost:** it's just
+another route on the same Worker returning a string. No Cloudflare Pages
+project, no separate static-asset binding, no additional request quota —
+serving static HTML is negligible CPU compared to the routes that call
+Twelve Data, Finnhub, or Gemini.
+
+**Same auth caveat as `/watchlist`:** the dashboard is unauthenticated,
+so it inherits the same exposure as the raw API routes it calls — anyone
+with the URL can view and modify things through it. See **Next steps**
+for the planned fix.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -457,8 +507,9 @@ if you go much bigger.
 - Add an endpoint to add/remove tickers from Telegram itself (Telegram
   webhook → Worker route) — a friendlier front-end on top of the
   `/watchlist` API that already exists
-- Lock down `/watchlist` (and other mutating routes) with a shared-secret
-  header check, since they're currently unauthenticated
+- Lock down `/watchlist`, `/dashboard`, and other mutating/sensitive
+  routes with a shared-secret header check, since they're currently
+  unauthenticated
 - Backtest `analysis.ts`'s thresholds against historical data before
   trusting the quant layer with real signals — now doable via
   `/backtest/:ticker` (see **Backtesting** above)
