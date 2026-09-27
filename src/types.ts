@@ -71,3 +71,35 @@ export interface CombinedResult {
   ai: AiResult | null; // null if Gemini call failed — quant-only fallback
   finalSignal: Signal;
 }
+
+// --- Backtesting ---
+
+export interface BacktestConfig {
+  startingCapital: number;
+}
+
+export interface BacktestTrade {
+  entryDate: string; // ISO date
+  entryPrice: number;
+  exitDate: string | null; // null if still open at end of backtest window
+  exitPrice: number | null;
+  holdingDays: number | null;
+  returnPct: number | null; // null if still open
+  exitReason: "SELL signal" | "end of backtest window";
+}
+
+export interface BacktestResult {
+  ticker: string;
+  fromDate: string;
+  toDate: string;
+  candlesEvaluated: number; // number of days the strategy actually ran over (after warm-up)
+  startingCapital: number;
+  endingCapital: number;
+  totalReturnPct: number;
+  maxDrawdownPct: number;
+  winRatePct: number | null; // null if zero closed trades
+  totalTrades: number;
+  avgHoldingDays: number | null;
+  buyAndHoldReturnPct: number; // benchmark over the same evaluated window
+  trades: BacktestTrade[];
+}

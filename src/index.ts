@@ -7,6 +7,7 @@ import { fetchFundamentals } from "./fundamentals";
 import { analyzeWithGemini } from "./gemini";
 import { combineSignals } from "./combine";
 import { sendTelegramMessage } from "./telegram";
+import { runBacktest } from "./backtest";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -62,6 +63,34 @@ app.get("/analyze/:ticker", async (c) => {
   const ticker = c.req.param("ticker").toUpperCase();
   try {
     const result = await runFullAnalysis(c.env, ticker);
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+// Backtest: GET /backtest/AAPL?days=500&capital=10000
+// Quant-only (RSI/MACD/SMA) — no Gemini/news/fundamentals calls, so it's
+// fast, free, and fully reproducible.
+app.get("/backtest/:ticker", async (c) => {
+  const ticker = c.req.param("ticker").toUpperCase();
+  const daysParam = c.req.query("days");
+  const capitalParam = c.req.query("capital");
+
+  const days = daysParam ? parseInt(daysParam, 10) : 500;
+  const startingCapital = capitalParam ? parseFloat(capitalParam) : 10000;
+
+  if (!Number.isFinite(days) || days <= 50) {
+    return c.json({ error: "days must be a number greater than 50" }, 400);
+  }
+  if (!Number.isFinite(startingCapital) || startingCapital <= 0) {
+    return c.json({ error: "capital must be a positive number" }, 400);
+  }
+
+  try {
+    // Twelve Data's outputsize caps out around 5000 on the free tier
+    const candles = await fetchDailyCandles(ticker, c.env.STOCK_API_KEY, Math.min(days, 5000));
+    const result = runBacktest(ticker, candles, { startingCapital });
     return c.json(result);
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);
