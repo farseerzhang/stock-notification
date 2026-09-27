@@ -22,12 +22,12 @@ the Worker up, which for each ticker in your watchlist:
    debt-to-equity, market cap
 4. **Sends all of the above to Gemini**, which weighs technicals,
    fundamentals, and news together and returns its own signal + confidence
-   + reasoning
+    + reasoning
 5. **Combines both layers** into one final signal:
-   - Quant and AI agree → go with it
-   - AI disagrees with ≥75% confidence → surface AI's view (worth watching
-     closely)
-   - AI disagrees without high confidence → stay cautious, HOLD
+    - Quant and AI agree → go with it
+    - AI disagrees with ≥75% confidence → surface AI's view (worth watching
+      closely)
+    - AI disagrees without high confidence → stay cautious, HOLD
 6. **If the final signal is BUY/SELL and different from last time**, sends
    a Telegram message with the full breakdown. State is stored in KV so you
    don't get repeat alerts for an unchanged signal.
@@ -54,7 +54,8 @@ stock-notifier/
     ├── fundamentals.ts       # Fetches P/E, EPS, revenue growth, debt/equity (Finnhub)
     ├── gemini.ts            # Sends indicators + news + fundamentals to Gemini, parses verdict
     ├── combine.ts            # Merges quant signal + AI signal into one final decision
-    └── telegram.ts            # Sends the alert message to your Telegram chat
+    ├── backtest.ts            # Simulates the quant strategy over historical candles
+    └── telegram.ts             # Sends the alert message to your Telegram chat
 ```
 
 **File-by-file summary:**
@@ -69,6 +70,7 @@ stock-notifier/
 | `fundamentals.ts` | `fetchFundamentals()` — P/E, EPS TTM, revenue/share TTM, revenue growth YoY, debt-to-equity, market cap. Reads defensively since Finnhub's field names vary by company. |
 | `gemini.ts` | `analyzeWithGemini()` — builds one prompt combining everything above, calls Gemini in JSON response mode, parses and validates the result. |
 | `combine.ts` | `combineSignals()` — the agreement/override logic described above. |
+| `backtest.ts` | `runBacktest()` — walks forward through historical candles day-by-day, simulates the quant strategy (no AI/news/fundamentals), and reports return/drawdown/win-rate stats plus a full trade log. |
 | `telegram.ts` | `sendTelegramMessage()` — thin wrapper around the Telegram Bot API. |
 
 ---
@@ -102,8 +104,8 @@ You'll need **four** external keys/tokens total. All are free tier.
    ```
 4. Find `"chat": { "id": ... }` in the JSON response — that number is your
    **chat ID**
-   - If `"result": []` (empty), send your bot a fresh message and reload
-     the URL immediately after
+    - If `"result": []` (empty), send your bot a fresh message and reload
+      the URL immediately after
 
 ### 3. Gemini API key (AI reasoning layer)
 1. Get a free key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
@@ -244,6 +246,13 @@ curl https://stock-notifier.<your-subdomain>.workers.dev/analyze/AAPL
 → JSON with `quant`, `ai` (signal/confidence/reasoning/newsConsidered/
 fundamentalsConsidered), and `finalSignal`
 
+**Run a backtest for one ticker:**
+```bash
+curl "https://stock-notifier.<your-subdomain>.workers.dev/backtest/AAPL?days=500&capital=10000"
+```
+→ JSON with return/drawdown/win-rate stats, a buy-and-hold benchmark, and
+the full trade log. See **Backtesting** below for details.
+
 **Confirm Telegram wiring independent of market conditions:**
 ```bash
 curl https://stock-notifier.<your-subdomain>.workers.dev/test-telegram
@@ -266,6 +275,99 @@ Leave running in one terminal, trigger requests in another — you'll see
 **Confirm the cron trigger is registered:**
 Dashboard → your Worker → **Triggers** tab, or check **Logs** for past
 invocation timestamps.
+
+---
+
+## Backtesting
+
+`GET /backtest/:ticker` simulates how the **quant strategy alone**
+(RSI + MACD + SMA20/50, from `analysis.ts`) would have performed over
+historical data. It does **not** call Gemini, Finnhub news, or
+fundamentals — so it's fast, free (only costs one Twelve Data request),
+and fully reproducible, which matters if you're tuning the thresholds in
+`analysis.ts` and want to compare runs apples-to-apples.
+
+### Usage
+
+```bash
+curl "https://stock-notifier.<your-subdomain>.workers.dev/backtest/AAPL?days=500&capital=10000"
+```
+
+| Query param | Default | Notes |
+|---|---|---|
+| `days` | `500` | Number of daily candles to fetch and evaluate. Must be > 50 (the strategy needs ~50 days of warm-up before SMA50 is available). Capped at 5000, Twelve Data's free-tier `outputsize` ceiling. |
+| `capital` | `10000` | Starting capital for the simulation, in the same currency the price data is quoted in (USD for US tickers). |
+
+### How the simulation works
+
+- Walks forward **day by day** through the fetched candles, computing the
+  quant signal at each point using only data available up to that day —
+  no lookahead bias
+- **Fully in/out**, single position, no shorting: a BUY signal opens a
+  position (if flat), a SELL signal closes it (if holding). No partial
+  sizing.
+- Mirrors the live bot's dedup behavior — a signal must actually **change**
+  to trigger a simulated trade, matching what you'd really have been
+  notified about
+- Any position still open at the end of the window is closed at the final
+  candle's price for reporting, flagged as `"exitReason": "end of backtest
+  window"` rather than `"SELL signal"` in the trade log
+
+### Response shape
+
+```json
+{
+  "ticker": "AAPL",
+  "fromDate": "2024-11-12",
+  "toDate": "2026-09-24",
+  "candlesEvaluated": 450,
+  "startingCapital": 10000,
+  "endingCapital": 11250.30,
+  "totalReturnPct": 12.5,
+  "maxDrawdownPct": 8.3,
+  "winRatePct": 55.6,
+  "totalTrades": 9,
+  "avgHoldingDays": 22.4,
+  "buyAndHoldReturnPct": 18.2,
+  "trades": [
+    {
+      "entryDate": "2025-02-03",
+      "entryPrice": 228.15,
+      "exitDate": "2025-03-18",
+      "exitPrice": 241.80,
+      "holdingDays": 30,
+      "returnPct": 5.98,
+      "exitReason": "SELL signal"
+    }
+  ]
+}
+```
+
+- **`totalReturnPct`** vs **`buyAndHoldReturnPct`** — the key comparison:
+  did actively trading on the quant signal beat just holding the stock
+  over the same window?
+- **`maxDrawdownPct`** — the worst peak-to-trough dip in the strategy's
+  equity curve, useful for gauging risk, not just return
+- **`winRatePct`** is `null` if there were zero closed trades in the window
+  (e.g. the signal never changed)
+
+### Known limitations
+
+- **Quant-only** — doesn't reflect how the AI/news/fundamentals layer
+  would have shifted decisions historically. An AI-sampled backtest mode
+  is a planned addition (see **Next steps**), but comes with real
+  constraints worth knowing upfront: Finnhub's fundamentals endpoint only
+  returns *current* metrics, not point-in-time historical ones, so an
+  AI-assisted backtest can only ever use today's fundamentals as a rough
+  proxy — never the true historical values for the tested date.
+- **No transaction costs or slippage** modeled — real returns would be
+  somewhat lower
+- **No survivorship bias correction** — if you backtest a company that's
+  since gone bankrupt or been delisted, this won't reflect that (not
+  usually a concern for tickers you're actively watching today, but worth
+  knowing if you backtest older/riskier names)
+- **Single position sizing only** — no partial buys, no pyramiding, no
+  stop-losses beyond what the SELL signal itself represents
 
 ---
 
@@ -314,6 +416,11 @@ if you go much bigger.
 - Add an endpoint to add/remove tickers from Telegram itself (Telegram
   webhook → Worker route)
 - Backtest `analysis.ts`'s thresholds against historical data before
-  trusting the quant layer with real signals
+  trusting the quant layer with real signals — now doable via
+  `/backtest/:ticker` (see **Backtesting** above)
+- Add an AI-sampled backtest mode (`/backtest/:ticker?ai=true`) that spot-
+  checks a subset of historical dates with Gemini reasoning, rather than a
+  full day-by-day AI replay (kept out of scope for the initial quant-only
+  version — see the **Known limitations** note in **Backtesting**)
 - Add retry-with-backoff around the Gemini call so a transient 503
   doesn't fall back to quant-only for that run
