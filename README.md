@@ -55,7 +55,8 @@ stock-notifier/
     ├── gemini.ts            # Sends indicators + news + fundamentals to Gemini, parses verdict
     ├── combine.ts            # Merges quant signal + AI signal into one final decision
     ├── backtest.ts            # Simulates the quant strategy over historical candles
-    └── telegram.ts             # Sends the alert message to your Telegram chat
+    ├── watchlist.ts            # KV-backed watchlist CRUD — no redeploy needed to edit
+    └── telegram.ts              # Sends the alert message to your Telegram chat
 ```
 
 **File-by-file summary:**
@@ -71,6 +72,7 @@ stock-notifier/
 | `gemini.ts` | `analyzeWithGemini()` — builds one prompt combining everything above, calls Gemini in JSON response mode, parses and validates the result. |
 | `combine.ts` | `combineSignals()` — the agreement/override logic described above. |
 | `backtest.ts` | `runBacktest()` — walks forward through historical candles day-by-day, simulates the quant strategy (no AI/news/fundamentals), and reports return/drawdown/win-rate stats plus a full trade log. |
+| `watchlist.ts` | `getWatchlist()` / `addTicker()` / `removeTicker()` — reads/writes the ticker list in KV, seeding it with a default on first run. |
 | `telegram.ts` | `sendTelegramMessage()` — thin wrapper around the Telegram Bot API. |
 
 ---
@@ -160,26 +162,19 @@ npx wrangler kv:namespace create "STOCK_KV"
 Copy the returned `id` into `wrangler.toml` under `[[kv_namespaces]]`,
 replacing `REPLACE_WITH_YOUR_KV_ID`.
 
-### 4. Edit your watchlist
-Open `src/index.ts` and change:
-```typescript
-const WATCHLIST = ["AAPL", "MSFT", "NVDA"];
-```
-to whatever tickers you want tracked.
-
-### 5. Adjust the cron schedule (optional)
+### 4. Adjust the cron schedule (optional)
 `wrangler.toml` runs every 15 minutes, Mon–Fri, 13:00–21:00 UTC (covers
 US market hours across DST). Adjust with [crontab.guru](https://crontab.guru/)
 if needed.
 
-### 6. Do an initial CLI deploy (creates the Worker)
+### 5. Do an initial CLI deploy (creates the Worker)
 ```bash
 npx wrangler deploy
 ```
 This must happen **before** setting secrets — secrets attach to a Worker
 by name, so the Worker needs to exist first.
 
-### 7. Set your secrets
+### 6. Set your secrets
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_CHAT_ID
@@ -190,7 +185,13 @@ npx wrangler secret put FINNHUB_API_KEY
 (Optional overrides: `GEMINI_MODEL`, `ENABLE_NEWS`, `ENABLE_FUNDAMENTALS`
 — same `wrangler secret put <NAME>` pattern.)
 
-### 8. Redeploy so the Worker picks up your watchlist/config changes
+### 7. Set your watchlist
+The watchlist lives in KV, not in code — it's seeded automatically with
+`AAPL`, `MSFT`, `NVDA` the first time the Worker runs, and from then on
+you edit it via API calls rather than redeploying. See **Watchlist
+management** below.
+
+### 8. Redeploy so the Worker picks up your config changes
 ```bash
 npx wrangler deploy
 ```
@@ -371,6 +372,48 @@ curl "https://stock-notifier.<your-subdomain>.workers.dev/backtest/AAPL?days=500
 
 ---
 
+## Watchlist management
+
+The watchlist lives in **KV**, not in code — edit it via API calls and the
+change takes effect on the very next scheduled run, no redeploy needed.
+It's seeded automatically with `AAPL`, `MSFT`, `NVDA` the first time the
+Worker runs; after that, KV is the only source of truth (re-editing any
+old hardcoded default in the source does nothing once KV has a value).
+
+```bash
+# view current watchlist
+curl https://stock-notifier.<your-subdomain>.workers.dev/watchlist
+
+# add a ticker
+curl.exe -X POST https://stock-notifier.<your-subdomain>.workers.dev/watchlist/TSLA
+
+# remove a ticker
+curl.exe -X DELETE https://stock-notifier.<your-subdomain>.workers.dev/watchlist/NVDA
+```
+
+> **Windows PowerShell users:** plain `curl` in PowerShell is actually an
+> alias for `Invoke-WebRequest`, which doesn't understand `-X` or other
+> real-curl flags and will error with `A parameter cannot be found that
+> matches parameter name 'X'`. Use `curl.exe` (forces the real curl binary,
+> shown above) or PowerShell's native syntax instead:
+> ```powershell
+> Invoke-WebRequest -Method POST -Uri https://stock-notifier.<your-subdomain>.workers.dev/watchlist/TSLA
+> Invoke-WebRequest -Method DELETE -Uri https://stock-notifier.<your-subdomain>.workers.dev/watchlist/NVDA
+> ```
+> Plain `curl` works fine for simple `GET` requests either way — it's only
+> `-X`, `-d`, and similar flags that trip up the PowerShell alias.
+
+Both add and remove are idempotent: adding a ticker that's already present,
+or removing one that isn't there, just returns the current list unchanged
+rather than erroring.
+
+**Note:** these routes are currently unauthenticated — anyone with your
+Worker's URL could modify the watchlist. Fine for a personal tool, but
+worth locking down with a shared-secret header check if you ever share
+the URL or make the repo public.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -411,10 +454,11 @@ if you go much bigger.
 
 ## Next steps to consider
 
-- Move `WATCHLIST` into KV so you can edit it via an API route instead of
-  redeploying
 - Add an endpoint to add/remove tickers from Telegram itself (Telegram
-  webhook → Worker route)
+  webhook → Worker route) — a friendlier front-end on top of the
+  `/watchlist` API that already exists
+- Lock down `/watchlist` (and other mutating routes) with a shared-secret
+  header check, since they're currently unauthenticated
 - Backtest `analysis.ts`'s thresholds against historical data before
   trusting the quant layer with real signals — now doable via
   `/backtest/:ticker` (see **Backtesting** above)

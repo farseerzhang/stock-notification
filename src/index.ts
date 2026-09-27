@@ -8,11 +8,9 @@ import { analyzeWithGemini } from "./gemini";
 import { combineSignals } from "./combine";
 import { sendTelegramMessage } from "./telegram";
 import { runBacktest } from "./backtest";
+import { getWatchlist, addTicker, removeTicker } from "./watchlist";
 
 const app = new Hono<{ Bindings: Env }>();
-
-// Your watchlist. Move this to KV later if you want to edit it without redeploying.
-const WATCHLIST = ["AAPL", "MSFT", "NVDA"];
 
 async function runFullAnalysis(env: Env, ticker: string): Promise<CombinedResult> {
   const candles = await fetchDailyCandles(ticker, env.STOCK_API_KEY);
@@ -114,6 +112,27 @@ app.get("/test-telegram", async (c) => {
 // Health check
 app.get("/", (c) => c.text("stock-notifier is running"));
 
+// Watchlist management — edit without redeploying
+// GET    /watchlist          → list current tickers
+// POST   /watchlist/:ticker  → add a ticker
+// DELETE /watchlist/:ticker  → remove a ticker
+app.get("/watchlist", async (c) => {
+  const list = await getWatchlist(c.env);
+  return c.json({ watchlist: list });
+});
+
+app.post("/watchlist/:ticker", async (c) => {
+  const ticker = c.req.param("ticker");
+  const updated = await addTicker(c.env, ticker);
+  return c.json({ watchlist: updated });
+});
+
+app.delete("/watchlist/:ticker", async (c) => {
+  const ticker = c.req.param("ticker");
+  const updated = await removeTicker(c.env, ticker);
+  return c.json({ watchlist: updated });
+});
+
 // How many recent scheduler runs to keep in KV for later inspection via /logs
 const LOG_HISTORY_LIMIT = 50;
 
@@ -143,9 +162,10 @@ async function appendLogEntry(env: Env, entry: RunLogEntry): Promise<void> {
 
 async function runScheduledAnalysis(env: Env, trigger: string): Promise<void> {
   const runStartedAt = new Date().toISOString();
-  console.log(`[scheduler] triggered at ${runStartedAt} (cron: ${trigger}), watchlist: ${WATCHLIST.join(", ")}`);
+  const watchlist = await getWatchlist(env);
+  console.log(`[scheduler] triggered at ${runStartedAt} (cron: ${trigger}), watchlist: ${watchlist.join(", ")}`);
 
-  for (const ticker of WATCHLIST) {
+  for (const ticker of watchlist) {
     const timestamp = new Date().toISOString();
     try {
       const result = await runFullAnalysis(env, ticker);
