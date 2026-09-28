@@ -10,8 +10,19 @@ import { sendTelegramMessage } from "./telegram";
 import { runBacktest } from "./backtest";
 import { getWatchlist, addTicker, removeTicker } from "./watchlist";
 import { renderDashboard } from "./ui";
+import { requireAuth } from "./auth";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Protect the dashboard and every sensitive/mutating route it depends on.
+// Health check ("/") stays open so uptime checks don't need credentials.
+app.use("/dashboard", requireAuth());
+app.use("/watchlist", requireAuth());
+app.use("/watchlist/*", requireAuth());
+app.use("/analyze/*", requireAuth());
+app.use("/backtest/*", requireAuth());
+app.use("/logs", requireAuth());
+app.use("/test-telegram", requireAuth());
 
 async function runFullAnalysis(env: Env, ticker: string): Promise<CombinedResult> {
   const candles = await fetchDailyCandles(ticker, env.STOCK_API_KEY);

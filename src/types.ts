@@ -8,6 +8,8 @@ export interface Env {
   FINNHUB_API_KEY: string; // free tier: company news + basic financials endpoints
   ENABLE_NEWS?: string; // "true"/"false" — toggles fetching + feeding news to Gemini
   ENABLE_FUNDAMENTALS?: string; // "true"/"false" — toggles fetching + feeding fundamentals to Gemini
+  DASHBOARD_PASSWORD: string; // required — protects /dashboard and the sensitive API routes it uses
+  DASHBOARD_USERNAME?: string; // optional, defaults to "admin"
 }
 
 export interface Candle {
