@@ -4,7 +4,6 @@ export interface Env {
   TELEGRAM_CHAT_ID: string;
   STOCK_API_KEY: string;
   GEMINI_API_KEY: string;
-  GEMINI_MODEL?: string; // optional override, defaults to gemini-3.6-flash
   FINNHUB_API_KEY: string; // free tier: company news + basic financials endpoints
   ENABLE_NEWS?: string; // "true"/"false" — toggles fetching + feeding news to Gemini
   ENABLE_FUNDAMENTALS?: string; // "true"/"false" — toggles fetching + feeding fundamentals to Gemini

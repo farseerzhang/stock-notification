@@ -57,8 +57,7 @@ async function runFullAnalysis(env: Env, ticker: string): Promise<CombinedResult
         quant,
         candles,
         news,
-        fundamentals,
-        env.GEMINI_MODEL
+        fundamentals
     );
   } catch (err) {
     // Never let a Gemini failure break the pipeline — quant-only fallback

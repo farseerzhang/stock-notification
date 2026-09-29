@@ -1,6 +1,7 @@
 import type { QuantResult, Candle, AiResult, NewsHeadline, Fundamentals, Signal } from "./types";
 
 const DEFAULT_MODEL = "gemini-3.5-flash-lite";
+const FALLBACK_MODEL = "gemini-3.6-flash";
 
 function formatFundamentals(f: Fundamentals | null): string {
   if (!f) return "Not available for this run.";
@@ -18,20 +19,12 @@ function formatFundamentals(f: Fundamentals | null): string {
   ].join("\n");
 }
 
-/**
- * Combines quant indicators + recent news headlines + fundamental metrics
- * (all fetched separately via Finnhub — see finnhubNews.ts and
- * fundamentals.ts) into one structured verdict. Single call, JSON response
- * mode, no search tool — normal token pricing only.
- */
-export async function analyzeWithGemini(
-    apiKey: string,
+function buildPrompt(
     quant: QuantResult,
     recentCandles: Candle[],
     news: NewsHeadline[],
-    fundamentals: Fundamentals | null,
-    model = DEFAULT_MODEL
-): Promise<AiResult> {
+    fundamentals: Fundamentals | null
+): string {
   const recentCloses = recentCandles
       .slice(-10)
       .map((c) => c.close.toFixed(2))
@@ -44,7 +37,7 @@ export async function analyzeWithGemini(
               .join("\n")
           : "No recent news available for this run.";
 
-  const prompt = `You are a disciplined equity analyst assistant. You are given
+  return `You are a disciplined equity analyst assistant. You are given
 already-computed technical indicators, fundamental metrics, and recent news
 headlines for ${quant.ticker}, plus the last 10 daily closing prices. Weigh
 all of it together and decide on a signal.
@@ -75,7 +68,19 @@ disagreement honestly in your confidence score. A high P/E with slowing
 revenue growth or rising debt-to-equity should lower confidence in a BUY
 even if technicals look strong, and vice versa for a SELL. If fundamentals
 or news are unavailable, base your decision on what you do have.`;
+}
 
+/**
+ * Single low-level call to Gemini's generateContent endpoint for one
+ * specific model. Throws on any failure (non-2xx response, empty text,
+ * invalid JSON) — the caller decides what to do about it (e.g. fall back
+ * to a different model).
+ */
+async function callGemini(apiKey: string, model: string, prompt: string): Promise<{
+  signal: Signal;
+  confidence: number;
+  reasoning: string;
+}> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const res = await fetch(url, {
@@ -95,7 +100,7 @@ or news are unavailable, base your decision on what you do have.`;
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Gemini API request failed: ${res.status} ${body}`);
+    throw new Error(`Gemini API request failed (model: ${model}): ${res.status} ${body}`);
   }
 
   const data = await res.json<{
@@ -107,14 +112,14 @@ or news are unavailable, base your decision on what you do have.`;
 
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
-    throw new Error("Gemini response had no text content");
+    throw new Error(`Gemini response had no text content (model: ${model})`);
   }
 
   let parsed: { signal?: string; confidence?: number; reasoning?: string };
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error(`Gemini did not return valid JSON: ${text.slice(0, 200)}`);
+    throw new Error(`Gemini did not return valid JSON (model: ${model}): ${text.slice(0, 200)}`);
   }
 
   const signal = normalizeSignal(parsed.signal);
@@ -127,6 +132,60 @@ or news are unavailable, base your decision on what you do have.`;
     signal,
     confidence,
     reasoning: parsed.reasoning ?? "No reasoning provided",
+  };
+}
+
+/**
+ * Combines quant indicators + recent news headlines + fundamental metrics
+ * (all fetched separately via Finnhub — see finnhubNews.ts and
+ * fundamentals.ts) into one structured verdict.
+ *
+ * Tries the primary model first. If that call fails for ANY reason — model
+ * retired (404), overloaded (503), rate limited (429), malformed
+ * response, network error, etc. — it automatically retries once against
+ * `fallbackModel` before giving up. This is what makes the pipeline
+ * resilient to exactly the kind of transient model issues you'll
+ * occasionally hit (see README's Troubleshooting table for real examples
+ * of both).
+ */
+export async function analyzeWithGemini(
+    apiKey: string,
+    quant: QuantResult,
+    recentCandles: Candle[],
+    news: NewsHeadline[],
+    fundamentals: Fundamentals | null
+): Promise<AiResult> {
+  const prompt = buildPrompt(quant, recentCandles, news, fundamentals);
+
+  let result: { signal: Signal; confidence: number; reasoning: string };
+  let usedModel: string = DEFAULT_MODEL;
+
+  try {
+    result = await callGemini(apiKey, DEFAULT_MODEL, prompt);
+  } catch (primaryErr) {
+    console.error(
+        `Gemini primary model (${DEFAULT_MODEL}) failed for ${quant.ticker}, falling back to ${FALLBACK_MODEL}:`,
+        (primaryErr as Error).message
+    );
+
+    try {
+      result = await callGemini(apiKey, FALLBACK_MODEL, prompt);
+      usedModel = FALLBACK_MODEL;
+    } catch (fallbackErr) {
+      throw new Error(
+          `Both primary (${DEFAULT_MODEL}) and fallback (${FALLBACK_MODEL}) Gemini calls failed for ${quant.ticker}. ` +
+          `Primary: ${(primaryErr as Error).message} | Fallback: ${(fallbackErr as Error).message}`
+      );
+    }
+  }
+
+  return {
+    signal: result.signal,
+    confidence: result.confidence,
+    reasoning:
+        usedModel !== DEFAULT_MODEL
+            ? `[via fallback model ${usedModel}] ${result.reasoning}`
+            : result.reasoning,
     newsConsidered: news.length,
     fundamentalsConsidered: fundamentals !== null,
   };

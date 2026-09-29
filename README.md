@@ -71,7 +71,7 @@ stock-notifier/
 | `analysis.ts` | `quantAnalyze()` — computes RSI(14), MACD(12,26,9), SMA(20)/SMA(50) via the `technicalindicators` npm package and scores them into BUY/SELL/HOLD. |
 | `finnhubNews.ts` | `fetchCompanyNews()` — last 7 days of headlines, deduplicated, capped at 8. |
 | `fundamentals.ts` | `fetchFundamentals()` — P/E, EPS TTM, revenue/share TTM, revenue growth YoY, debt-to-equity, market cap. Reads defensively since Finnhub's field names vary by company. |
-| `gemini.ts` | `analyzeWithGemini()` — builds one prompt combining everything above, calls Gemini in JSON response mode, parses and validates the result. |
+| `gemini.ts` | `analyzeWithGemini()` — builds one prompt combining everything above, calls Gemini in JSON response mode, parses and validates the result. Tries a primary model, falls back to a second hardcoded model automatically on failure — see **AI model fallback**. |
 | `combine.ts` | `combineSignals()` — the agreement/override logic described above. |
 | `backtest.ts` | `runBacktest()` — walks forward through historical candles day-by-day, simulates the quant strategy (no AI/news/fundamentals), and reports return/drawdown/win-rate stats plus a full trade log. |
 | `watchlist.ts` | `getWatchlist()` / `addTicker()` / `removeTicker()` — reads/writes the ticker list in KV, seeding it with a default on first run. |
@@ -115,9 +115,17 @@ You'll need **four** external keys/tokens total. All are free tier.
 
 ### 3. Gemini API key (AI reasoning layer)
 1. Get a free key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-2. Default model used is `gemini-3.6-flash`. If you hit a `404` saying a
-   model is retired, or a `503` saying it's overloaded, you can override
-   the model without a code change (see **Environment variables** below)
+2. The model is hardcoded in `src/gemini.ts` as two constants — a primary
+   and a fallback that's used automatically if the primary fails for any
+   reason (retired model, overload, rate limit, etc.):
+   ```typescript
+   const DEFAULT_MODEL = "gemini-3.5-flash-lite";
+   const FALLBACK_MODEL = "gemini-3.6-flash";
+   ```
+   If Google retires or overloads a model (you'll see it in `wrangler
+   tail` or the `/logs` route), edit these two constants directly and
+   redeploy — no secrets involved. See **AI model fallback** below for
+   how the retry logic works.
 
 ### 4. Finnhub API key (news + fundamentals)
 1. Sign up at [finnhub.io/register](https://finnhub.io/register)
@@ -139,12 +147,15 @@ Set in `wrangler.toml` (non-sensitive config) or via `wrangler secret put`
 | `TELEGRAM_CHAT_ID` | secret | Yes | From `getUpdates` |
 | `STOCK_API_KEY` | secret | Yes | Twelve Data key |
 | `GEMINI_API_KEY` | secret | Yes | Google AI Studio key |
-| `GEMINI_MODEL` | secret | No | Defaults to `gemini-3.6-flash` if unset. Override to swap models without redeploying code — e.g. `gemini-3.5-flash-lite` if the flagship model is overloaded (503) |
 | `FINNHUB_API_KEY` | secret | Yes | Used for both news and fundamentals |
 | `ENABLE_NEWS` | secret | No | `"false"` disables the Finnhub news fetch + Gemini's use of it. Defaults to enabled |
 | `ENABLE_FUNDAMENTALS` | secret | No | `"false"` disables the Finnhub fundamentals fetch. Defaults to enabled |
 | `DASHBOARD_PASSWORD` | secret | **Yes, for `/dashboard` and other protected routes** | Basic Auth password. Without this set, `/dashboard`, `/watchlist`, `/analyze/*`, `/backtest/*`, `/logs`, and `/test-telegram` all return `500` (fails closed, not open) |
 | `DASHBOARD_USERNAME` | secret | No | Basic Auth username. Defaults to `admin` if unset |
+
+> The Gemini model isn't in this table — it's hardcoded as two constants
+> in `src/gemini.ts` (primary + automatic fallback) rather than
+> configured via secret. See **AI model fallback** below.
 
 ---
 
@@ -193,7 +204,7 @@ npx wrangler secret put DASHBOARD_PASSWORD
 depends on — see **Dashboard authentication** below. It's required; those
 routes fail closed (return `500`) without it.
 
-(Optional overrides: `GEMINI_MODEL`, `ENABLE_NEWS`, `ENABLE_FUNDAMENTALS`,
+(Optional overrides: `ENABLE_NEWS`, `ENABLE_FUNDAMENTALS`,
 `DASHBOARD_USERNAME` — same `wrangler secret put <NAME>` pattern.)
 
 ### 7. Set your watchlist
@@ -517,13 +528,47 @@ mind if you ever expose more sensitive functionality behind it.
 
 ---
 
+## AI model fallback
+
+`src/gemini.ts` uses two hardcoded model constants rather than an env
+var, since model swaps here are infrequent enough that a code change +
+redeploy is simpler than another secret to manage:
+
+```typescript
+const DEFAULT_MODEL = "gemini-3.5-flash-lite";
+const FALLBACK_MODEL = "gemini-3.6-flash";
+```
+
+**How the fallback works:** every Gemini call tries `DEFAULT_MODEL`
+first. If that call fails for **any** reason — retired model (`404`),
+overloaded (`503`), rate limited (`429`), malformed response, network
+error — it automatically retries once against `FALLBACK_MODEL` before
+giving up. If it had to fall back, the AI's `reasoning` text in the
+response (and therefore in `/analyze`, Telegram messages, and `/logs`)
+is prefixed with `[via fallback model gemini-3.6-flash]`, so you can spot
+it without digging through `wrangler tail`.
+
+If **both** models fail, the whole AI layer throws and `index.ts` catches
+that — falling back further to quant-only for that run, exactly as if
+Gemini were unavailable entirely (see **How it works** at the top of
+this README).
+
+**If Google retires or overloads a model again** (this has happened
+twice already during development — see the table below): edit the two
+constants directly in `src/gemini.ts` and redeploy:
+```bash
+npx wrangler deploy
+```
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `ai: null` in `/analyze` response | Gemini call threw an error (silently caught for pipeline resilience) | Run `wrangler tail`, re-trigger, read the actual error logged |
-| Gemini `404 ... no longer available` | Model name retired | Set `GEMINI_MODEL` secret to the model Google's error message recommends |
-| Gemini `503 ... high demand` | Transient overload on that model | Retry in a minute, or switch to a lighter model like `gemini-3.5-flash-lite` via `GEMINI_MODEL` |
+| Gemini `404 ... no longer available` | Model name retired | Edit `DEFAULT_MODEL` in `src/gemini.ts` to the model Google's error message recommends, then redeploy. (The automatic fallback may already be covering you — check whether `/logs` shows `[via fallback model ...]`) |
+| Gemini `503 ... high demand` | Transient overload on that model | Usually self-heals via the automatic fallback (see **AI model fallback** above). If both models are overloaded, retry in a minute or swap `DEFAULT_MODEL` to a different model and redeploy |
 | Finnhub `401 Unauthorized` | `FINNHUB_API_KEY` not set, wrong, or has a stray space | `wrangler secret list` to confirm it's set; test the key directly: `curl "https://finnhub.io/api/v1/company-news?symbol=AAPL&from=2026-09-17&to=2026-09-24&token=YOUR_KEY"` |
 | `/dashboard` or other protected route returns `500` with a message about `DASHBOARD_PASSWORD` | The secret isn't set (fails closed by design) | `npx wrangler secret put DASHBOARD_PASSWORD` |
 | `/dashboard` or curl request returns `401 Authentication required` | Wrong username/password, or curl request missing `-u` | Double-check credentials; for curl always include `-u admin:yourpassword` (or your custom `DASHBOARD_USERNAME`) |
