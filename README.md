@@ -57,7 +57,8 @@ stock-notifier/
     ├── backtest.ts            # Simulates the quant strategy over historical candles
     ├── watchlist.ts            # KV-backed watchlist CRUD — no redeploy needed to edit
     ├── ui.ts                    # Dashboard HTML page (served at /dashboard) — no build step
-    └── telegram.ts               # Sends the alert message to your Telegram chat
+    ├── auth.ts                   # Basic Auth middleware protecting /dashboard and sensitive routes
+    └── telegram.ts                # Sends the alert message to your Telegram chat
 ```
 
 **File-by-file summary:**
@@ -75,6 +76,7 @@ stock-notifier/
 | `backtest.ts` | `runBacktest()` — walks forward through historical candles day-by-day, simulates the quant strategy (no AI/news/fundamentals), and reports return/drawdown/win-rate stats plus a full trade log. |
 | `watchlist.ts` | `getWatchlist()` / `addTicker()` / `removeTicker()` — reads/writes the ticker list in KV, seeding it with a default on first run. |
 | `ui.ts` | `renderDashboard()` — builds the `/dashboard` HTML page (inline CSS + vanilla JS) using Hono's `hono/html` templating. No build step; the JS just calls the JSON routes above with `fetch()`. |
+| `auth.ts` | `requireAuth()` — hand-written Basic Auth middleware guarding `/dashboard` and the sensitive routes it depends on. Fails closed if the password secret isn't set. |
 | `telegram.ts` | `sendTelegramMessage()` — thin wrapper around the Telegram Bot API. |
 
 ---
@@ -141,6 +143,8 @@ Set in `wrangler.toml` (non-sensitive config) or via `wrangler secret put`
 | `FINNHUB_API_KEY` | secret | Yes | Used for both news and fundamentals |
 | `ENABLE_NEWS` | secret | No | `"false"` disables the Finnhub news fetch + Gemini's use of it. Defaults to enabled |
 | `ENABLE_FUNDAMENTALS` | secret | No | `"false"` disables the Finnhub fundamentals fetch. Defaults to enabled |
+| `DASHBOARD_PASSWORD` | secret | **Yes, for `/dashboard` and other protected routes** | Basic Auth password. Without this set, `/dashboard`, `/watchlist`, `/analyze/*`, `/backtest/*`, `/logs`, and `/test-telegram` all return `500` (fails closed, not open) |
+| `DASHBOARD_USERNAME` | secret | No | Basic Auth username. Defaults to `admin` if unset |
 
 ---
 
@@ -183,9 +187,14 @@ npx wrangler secret put TELEGRAM_CHAT_ID
 npx wrangler secret put STOCK_API_KEY
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put FINNHUB_API_KEY
+npx wrangler secret put DASHBOARD_PASSWORD
 ```
-(Optional overrides: `GEMINI_MODEL`, `ENABLE_NEWS`, `ENABLE_FUNDAMENTALS`
-— same `wrangler secret put <NAME>` pattern.)
+`DASHBOARD_PASSWORD` protects `/dashboard` and the sensitive API routes it
+depends on — see **Dashboard authentication** below. It's required; those
+routes fail closed (return `500`) without it.
+
+(Optional overrides: `GEMINI_MODEL`, `ENABLE_NEWS`, `ENABLE_FUNDAMENTALS`,
+`DASHBOARD_USERNAME` — same `wrangler secret put <NAME>` pattern.)
 
 ### 7. Set your watchlist
 The watchlist lives in KV, not in code — it's seeded automatically with
@@ -234,9 +243,10 @@ regardless of which deploy method you use going forward.
 ## Testing
 
 Replace `<your-subdomain>` with your actual Workers subdomain (shown at
-the end of `wrangler deploy` output, or in the dashboard).
+the end of `wrangler deploy` output, or in the dashboard). Replace
+`yourpassword` with whatever you set for `DASHBOARD_PASSWORD`.
 
-**Health check:**
+**Health check (no auth required):**
 ```bash
 curl https://stock-notifier.<your-subdomain>.workers.dev/
 ```
@@ -244,14 +254,14 @@ curl https://stock-notifier.<your-subdomain>.workers.dev/
 
 **Full analysis for one ticker (manual, doesn't wait for cron):**
 ```bash
-curl https://stock-notifier.<your-subdomain>.workers.dev/analyze/AAPL
+curl -u admin:yourpassword https://stock-notifier.<your-subdomain>.workers.dev/analyze/AAPL
 ```
 → JSON with `quant`, `ai` (signal/confidence/reasoning/newsConsidered/
 fundamentalsConsidered), and `finalSignal`
 
 **Run a backtest for one ticker:**
 ```bash
-curl "https://stock-notifier.<your-subdomain>.workers.dev/backtest/AAPL?days=500&capital=10000"
+curl -u admin:yourpassword "https://stock-notifier.<your-subdomain>.workers.dev/backtest/AAPL?days=500&capital=10000"
 ```
 → JSON with return/drawdown/win-rate stats, a buy-and-hold benchmark, and
 the full trade log. See **Backtesting** below for details.
@@ -261,18 +271,19 @@ above (watchlist, analyze, backtest, logs) instead of raw curl/JSON:
 ```
 https://stock-notifier.<your-subdomain>.workers.dev/dashboard
 ```
-See **Dashboard** below for details.
+Your browser will prompt for the username/password you set. See
+**Dashboard** and **Dashboard authentication** below for details.
 
 **Confirm Telegram wiring independent of market conditions:**
 ```bash
-curl https://stock-notifier.<your-subdomain>.workers.dev/test-telegram
+curl -u admin:yourpassword https://stock-notifier.<your-subdomain>.workers.dev/test-telegram
 ```
 → should land a message in your Telegram chat immediately
 
 **View recent scheduler run history:**
 ```bash
-curl https://stock-notifier.<your-subdomain>.workers.dev/logs
-curl "https://stock-notifier.<your-subdomain>.workers.dev/logs?limit=10"
+curl -u admin:yourpassword https://stock-notifier.<your-subdomain>.workers.dev/logs
+curl -u admin:yourpassword "https://stock-notifier.<your-subdomain>.workers.dev/logs?limit=10"
 ```
 
 **Watch live logs while cron fires (or while testing manually):**
@@ -416,10 +427,9 @@ Both add and remove are idempotent: adding a ticker that's already present,
 or removing one that isn't there, just returns the current list unchanged
 rather than erroring.
 
-**Note:** these routes are currently unauthenticated — anyone with your
-Worker's URL could modify the watchlist. Fine for a personal tool, but
-worth locking down with a shared-secret header check if you ever share
-the URL or make the repo public.
+**Note:** these routes require the same Basic Auth credentials as the
+dashboard — see **Dashboard authentication** below. `wrangler` and curl
+users need `-u username:password`; browsers get a native login prompt.
 
 ---
 
@@ -457,10 +467,53 @@ project, no separate static-asset binding, no additional request quota —
 serving static HTML is negligible CPU compared to the routes that call
 Twelve Data, Finnhub, or Gemini.
 
-**Same auth caveat as `/watchlist`:** the dashboard is unauthenticated,
-so it inherits the same exposure as the raw API routes it calls — anyone
-with the URL can view and modify things through it. See **Next steps**
-for the planned fix.
+The dashboard is protected by Basic Auth — see the next section.
+
+---
+
+## Dashboard authentication
+
+`/dashboard` and the sensitive routes it depends on (`/watchlist`,
+`/analyze/*`, `/backtest/*`, `/logs`, `/test-telegram`) require **HTTP
+Basic Auth**. The health check (`/`) stays open so uptime monitors don't
+need credentials.
+
+**Setup (one-time):**
+```bash
+npx wrangler secret put DASHBOARD_PASSWORD
+# optional — defaults to "admin" if you skip this
+npx wrangler secret put DASHBOARD_USERNAME
+```
+
+**In a browser:** visiting `/dashboard` triggers your browser's native
+login prompt. Once entered, the browser caches the credentials and
+automatically attaches them to the dashboard's own `fetch()` calls to the
+other protected routes (they're same-origin), so you only log in once per
+browser session.
+
+**Via curl:**
+```bash
+curl -u admin:yourpassword https://stock-notifier.<your-subdomain>.workers.dev/watchlist
+```
+
+**Via PowerShell:**
+```powershell
+$cred = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("admin:yourpassword"))
+Invoke-WebRequest -Uri https://stock-notifier.<your-subdomain>.workers.dev/watchlist -Headers @{ Authorization = "Basic $cred" }
+```
+
+**Fails closed by design:** if `DASHBOARD_PASSWORD` isn't set, every
+protected route returns `500` with a message telling you to set it —
+never silently open. This is intentional: a missing secret should be
+loud, not a security hole you don't notice.
+
+**What this is (and isn't):** Basic Auth sends credentials with every
+request, base64-encoded but not encrypted on its own — this is fine here
+because Cloudflare Workers are served over HTTPS by default, so TLS
+handles the actual encryption in transit. It's a solid fit for a personal
+tool with one user, but isn't a full auth system (no sessions, no
+per-user accounts, no rate limiting on login attempts) — worth keeping in
+mind if you ever expose more sensitive functionality behind it.
 
 ---
 
@@ -472,6 +525,8 @@ for the planned fix.
 | Gemini `404 ... no longer available` | Model name retired | Set `GEMINI_MODEL` secret to the model Google's error message recommends |
 | Gemini `503 ... high demand` | Transient overload on that model | Retry in a minute, or switch to a lighter model like `gemini-3.5-flash-lite` via `GEMINI_MODEL` |
 | Finnhub `401 Unauthorized` | `FINNHUB_API_KEY` not set, wrong, or has a stray space | `wrangler secret list` to confirm it's set; test the key directly: `curl "https://finnhub.io/api/v1/company-news?symbol=AAPL&from=2026-09-17&to=2026-09-24&token=YOUR_KEY"` |
+| `/dashboard` or other protected route returns `500` with a message about `DASHBOARD_PASSWORD` | The secret isn't set (fails closed by design) | `npx wrangler secret put DASHBOARD_PASSWORD` |
+| `/dashboard` or curl request returns `401 Authentication required` | Wrong username/password, or curl request missing `-u` | Double-check credentials; for curl always include `-u admin:yourpassword` (or your custom `DASHBOARD_USERNAME`) |
 | No Telegram message ever arrives | Signal never left HOLD, or it's unchanged from last run (dedup via KV) | Use `/test-telegram` to isolate whether it's a wiring issue or just quiet market conditions |
 | `/analyze/:ticker` 500 error | Usually `STOCK_API_KEY` invalid or ticker not recognized by Twelve Data | Check the error message in the response body |
 
@@ -507,9 +562,6 @@ if you go much bigger.
 - Add an endpoint to add/remove tickers from Telegram itself (Telegram
   webhook → Worker route) — a friendlier front-end on top of the
   `/watchlist` API that already exists
-- Lock down `/watchlist`, `/dashboard`, and other mutating/sensitive
-  routes with a shared-secret header check, since they're currently
-  unauthenticated
 - Backtest `analysis.ts`'s thresholds against historical data before
   trusting the quant layer with real signals — now doable via
   `/backtest/:ticker` (see **Backtesting** above)
