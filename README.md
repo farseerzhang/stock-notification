@@ -559,9 +559,6 @@ if you go much bigger.
 
 ## Next steps to consider
 
-- Add an endpoint to add/remove tickers from Telegram itself (Telegram
-  webhook → Worker route) — a friendlier front-end on top of the
-  `/watchlist` API that already exists
 - Backtest `analysis.ts`'s thresholds against historical data before
   trusting the quant layer with real signals — now doable via
   `/backtest/:ticker` (see **Backtesting** above)
